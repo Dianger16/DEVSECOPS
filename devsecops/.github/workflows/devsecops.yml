@@ -81,7 +81,8 @@ jobs:
         with:
           projectBaseDir: .
           args: >
-            -Dsonar.projectKey=devsecops-demo
+            -Dsonar.projectKey=${{ secrets.SONAR_PROJECT_KEY }}
+            -Dsonar.organization=${{ secrets.SONAR_ORGANIZATION }}
             -Dsonar.sources=app
             -Dsonar.tests=app
             -Dsonar.test.inclusions=**/*.test.js
