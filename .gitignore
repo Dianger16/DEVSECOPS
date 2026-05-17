@@ -1,0 +1,8 @@
+node_modules/
+coverage/
+.env
+*.log
+zap-report.html
+audit-report.json
+report_html.html
+.sonar/

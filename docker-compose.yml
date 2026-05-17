@@ -1,0 +1,47 @@
+version: "3.9"
+
+# Run SonarQube locally for development scanning
+# Usage: docker compose up -d
+# Open: http://localhost:9000 (admin/admin on first login)
+
+services:
+  sonarqube:
+    image: sonarqube:community
+    container_name: sonarqube
+    ports:
+      - "9000:9000"
+    environment:
+      - SONAR_ES_BOOTSTRAP_CHECKS_DISABLE=true
+    volumes:
+      - sonarqube_data:/opt/sonarqube/data
+      - sonarqube_logs:/opt/sonarqube/logs
+      - sonarqube_extensions:/opt/sonarqube/extensions
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9000/api/system/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  # The app — target for OWASP ZAP DAST scanning
+  app:
+    build:
+      context: ./app
+      dockerfile: Dockerfile
+    container_name: devsecops-app
+    ports:
+      - "3000:3000"
+    environment:
+      - APP_VERSION=1.0.0
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  sonarqube_data:
+  sonarqube_logs:
+  sonarqube_extensions:

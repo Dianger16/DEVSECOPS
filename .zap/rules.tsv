@@ -1,0 +1,16 @@
+# .zap/rules.tsv
+# Controls how ZAP handles specific alert types
+# Format: AlertID	ACTION	PARAMETER	EVIDENCE
+# Actions: IGNORE, WARN, FAIL
+#
+# Get alert IDs from ZAP report after first run
+# Start with WARN for everything, move to FAIL once baseline established
+
+# Anti-CSRF Tokens — warn only (app doesn't have forms yet)
+10202	WARN	(main)	
+
+# Missing CSP header — warn (helmet doesn't set this by default)
+10038	WARN	(main)	
+
+# Server leaks info via X-Powered-By — warn
+10037	WARN	(main)

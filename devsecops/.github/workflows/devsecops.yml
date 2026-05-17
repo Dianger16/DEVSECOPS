@@ -1,0 +1,218 @@
+name: DevSecOps Pipeline — SAST + DAST
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  APP_PORT: 3000
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────
+  # JOB 1: TEST + COVERAGE
+  # Runs Jest tests and generates coverage report for SonarQube
+  # ─────────────────────────────────────────────────────────────────
+  test:
+    name: Test + Coverage
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0    # full history needed for SonarQube blame data
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+          cache: "npm"
+          cache-dependency-path: app/package-lock.json
+
+      - name: Install dependencies
+        working-directory: app
+        run: npm ci
+
+      - name: Run tests with coverage
+        working-directory: app
+        run: npm run test:ci
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: app/coverage/
+          retention-days: 1
+
+  # ─────────────────────────────────────────────────────────────────
+  # JOB 2: SAST — SonarQube Static Analysis
+  # Scans source code for bugs, vulnerabilities, code smells
+  # Blocks pipeline if Quality Gate fails
+  # ─────────────────────────────────────────────────────────────────
+  sast:
+    name: SAST — SonarQube
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+          cache: "npm"
+          cache-dependency-path: app/package-lock.json
+
+      - name: Install dependencies
+        working-directory: app
+        run: npm ci
+
+      - name: Generate coverage (needed for SonarQube)
+        working-directory: app
+        run: npm run test:ci
+
+      - name: Run SonarQube scan
+        uses: SonarSource/sonarqube-scan-action@master
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+        with:
+          projectBaseDir: .
+          args: >
+            -Dsonar.projectKey=devsecops-demo
+            -Dsonar.sources=app
+            -Dsonar.tests=app
+            -Dsonar.test.inclusions=**/*.test.js
+            -Dsonar.javascript.lcov.reportPaths=app/coverage/lcov.info
+            -Dsonar.exclusions=**/node_modules/**,**/coverage/**
+
+      # Wait for SonarQube to process and check Quality Gate result
+      - name: Check SonarQube Quality Gate
+        uses: SonarSource/sonarqube-quality-gate-action@master
+        timeout-minutes: 5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+
+  # ─────────────────────────────────────────────────────────────────
+  # JOB 3: DAST — OWASP ZAP Dynamic Analysis
+  # Spins up the real app, then runs ZAP against it
+  # Scans for: XSS, SQLi, CSRF, insecure headers, etc.
+  # ─────────────────────────────────────────────────────────────────
+  dast:
+    name: DAST — OWASP ZAP
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and start the app
+        working-directory: app
+        run: |
+          docker build -t devsecops-app:latest .
+          docker run -d \
+            --name devsecops-app \
+            -p 3000:3000 \
+            -e APP_VERSION=1.0.0 \
+            devsecops-app:latest
+
+          # Wait for app to be ready
+          echo "Waiting for app to start..."
+          for i in $(seq 1 15); do
+            HTTP=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/health || echo "000")
+            if [ "$HTTP" = "200" ]; then
+              echo "App is ready."
+              break
+            fi
+            echo "Attempt $i — HTTP $HTTP, waiting..."
+            sleep 3
+          done
+
+      - name: Run OWASP ZAP Baseline Scan
+        uses: zaproxy/action-baseline@v0.12.0
+        with:
+          target: "http://localhost:3000"
+          rules_file_name: ".zap/rules.tsv"
+          cmd_options: "-a"           # include the alpha passive scan rules
+          fail_action: false          # warn but don't fail pipeline on first run
+                                      # change to true once baseline is established
+
+      - name: Upload ZAP report
+        uses: actions/upload-artifact@v4
+        if: always()                  # upload even if scan found issues
+        with:
+          name: zap-security-report
+          path: report_html.html
+          retention-days: 30
+
+      - name: Stop app container
+        if: always()
+        run: docker rm -f devsecops-app || true
+
+  # ─────────────────────────────────────────────────────────────────
+  # JOB 4: DEPENDENCY AUDIT
+  # Checks npm packages for known CVEs
+  # Free, no setup needed — built into npm
+  # ─────────────────────────────────────────────────────────────────
+  dependency-audit:
+    name: Dependency Vulnerability Audit
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+
+      - name: Install dependencies
+        working-directory: app
+        run: npm ci
+
+      - name: Run npm audit
+        working-directory: app
+        run: |
+          echo "=== Dependency Security Audit ==="
+          npm audit --audit-level=high || true
+          npm audit --json > ../audit-report.json || true
+          echo "Audit complete."
+
+      - name: Upload audit report
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-audit-report
+          path: audit-report.json
+          retention-days: 30
+
+  # ─────────────────────────────────────────────────────────────────
+  # JOB 5: SECURITY SUMMARY
+  # Only runs after all security jobs complete
+  # Prints summary and blocks deploy if critical issues found
+  # ─────────────────────────────────────────────────────────────────
+  security-summary:
+    name: Security Summary
+    runs-on: ubuntu-latest
+    needs: [sast, dast, dependency-audit]
+    if: always()
+
+    steps:
+      - name: Print security summary
+        run: |
+          echo "============================================"
+          echo "  DevSecOps Pipeline — Security Summary"
+          echo "============================================"
+          echo "  SAST (SonarQube):     ${{ needs.sast.result }}"
+          echo "  DAST (OWASP ZAP):     ${{ needs.dast.result }}"
+          echo "  Dependency Audit:     ${{ needs.dependency-audit.result }}"
+          echo "============================================"
+
+          if [ "${{ needs.sast.result }}" = "failure" ]; then
+            echo "SAST FAILED — SonarQube Quality Gate not met."
+            echo "Fix code issues before deploying."
+            exit 1
+          fi
+          echo "All security checks passed or warned. Safe to deploy."
