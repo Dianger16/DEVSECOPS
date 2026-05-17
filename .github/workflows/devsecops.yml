@@ -142,7 +142,7 @@ jobs:
           rules_file_name: ".zap/rules.tsv"
           cmd_options: "-a"           # include the alpha passive scan rules
           fail_action: false          # warn but don't fail pipeline on first run
-          allow_issue_writing: false                           # change to true once baseline is established
+          allow_issue_writing: "false"                           # change to true once baseline is established
 
       - name: Upload ZAP report
         uses: actions/upload-artifact@v4
