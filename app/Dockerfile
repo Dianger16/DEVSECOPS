@@ -1,7 +1,7 @@
 FROM node:18-alpine AS deps
 WORKDIR /app
 COPY package*.json ./
-RUN npm install --ignore-scripts
+RUN npm ci
 
 FROM node:18-alpine
 WORKDIR /app
